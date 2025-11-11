@@ -1,8 +1,10 @@
 import boto3
 from datetime import datetime, timezone
+from tabulate import tabulate   # <-- for neat table output
 
 # Create IAM client
 iam = boto3.client('iam')
+
 
 def days_since(date):
     """Return number of days since a given date."""
@@ -88,14 +90,23 @@ def main():
         for user in page['Users']:
             all_users.append(get_user_details(user))
 
-    # ---- Print output table ----
-    print(f"{'User':<25} {'UserType':<10} {'TypeOfAccess':<10} {'Permissions':<30} {'LastLoginDays':<15} {'EligibleToRemove'}")
-    print("-" * 115)
-    for u in all_users:
-        print(f"{u['User']:<25} {u['UserType']:<10} {u['TypeOfAccess']:<10} "
-              f"{u['Permissions']:<30} {str(u['LastLoginDays']):<15} {u['EligibleToRemove']}")
-    print("-" * 115)
-    print(f"Total users: {len(all_users)}")
+    # ---- Prepare table data ----
+    headers = ["User", "UserType", "TypeOfAccess", "Permissions", "LastLoginDays", "EligibleToRemove"]
+    rows = [
+        [
+            u['User'],
+            u['UserType'],
+            u['TypeOfAccess'],
+            u['Permissions'],
+            u['LastLoginDays'],
+            u['EligibleToRemove'],
+        ]
+        for u in all_users
+    ]
+
+    # ---- Print pretty table ----
+    print(tabulate(rows, headers=headers, tablefmt="grid"))
+    print(f"\nTotal users: {len(all_users)}")
 
 
 if __name__ == "__main__":
