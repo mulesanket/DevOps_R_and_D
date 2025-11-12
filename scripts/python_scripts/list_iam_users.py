@@ -3,64 +3,70 @@ import pandas as pd
 from datetime import datetime, timezone
 from tabulate import tabulate
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font
+from openpyxl.styles import Font, Alignment
 from openpyxl import load_workbook
+import os
 
-# Create IAM client
 iam = boto3.client('iam')
 
-
 def days_since(date):
-    """Return number of days since a given date."""
     if not date:
         return None
     return (datetime.now(timezone.utc) - date).days
 
+def format_days(days):
+    if days is None:
+        return "Never"
+    elif days == 0:
+        return "Recently"
+    else:
+        return str(days)
 
 def get_user_details(user):
     username = user['UserName']
     user_path = user['Path']
     details = {
         'User': username,
-        'UserType': 'Unknown',
+        'UserType': 'Service' if user_path.strip('/') == 'service' else 'Local',
         'TypeOfAccess': 'None',
         'Permissions': '',
         'LastLoginDays': None,
         'EligibleToRemove': 'No'
     }
 
-    # ---- Determine user type from Path ----
-    if user_path.strip("/") == "service":
-        details['UserType'] = 'Service'
-    else:
-        details['UserType'] = 'Local'
-
-    # ---- Check console access ----
+    # Console access
     try:
         iam.get_login_profile(UserName=username)
         details['TypeOfAccess'] = 'Console'
     except iam.exceptions.NoSuchEntityException:
-        pass  # no console login
+        pass
 
-    # ---- Check CLI access (access keys) ----
+    # CLI access
     keys = iam.list_access_keys(UserName=username)['AccessKeyMetadata']
     if keys:
-        if details['TypeOfAccess'] == 'Console':
-            details['TypeOfAccess'] = 'Both'
-        else:
-            details['TypeOfAccess'] = 'CLI'
+        details['TypeOfAccess'] = 'Both' if details['TypeOfAccess'] == 'Console' else 'CLI'
 
-    # ---- Permissions (attached policies + groups) ----
+    # Permissions (managed + inline + group)
     policies = []
-    attached_policies = iam.list_attached_user_policies(UserName=username)['AttachedPolicies']
-    for p in attached_policies:
-        policies.append(p['PolicyName'])
-    groups = iam.list_groups_for_user(UserName=username)['Groups']
-    for g in groups:
-        policies.append(f"Group:{g['GroupName']}")
-    details['Permissions'] = ", ".join(policies) if policies else "None"
 
-    # ---- Last login / API key usage ----
+    # Direct attached managed policies
+    for p in iam.list_attached_user_policies(UserName=username)['AttachedPolicies']:
+        policies.append(f"Managed: {p['PolicyName']}")
+
+    # Inline user policies
+    for p in iam.list_user_policies(UserName=username)['PolicyNames']:
+        policies.append(f"Inline: {p}")
+
+    # Group-based policies
+    for g in iam.list_groups_for_user(UserName=username)['Groups']:
+        policies.append(f"Group: {g['GroupName']}")
+        attached_group_policies = iam.list_attached_group_policies(GroupName=g['GroupName'])['AttachedPolicies']
+        for gp in attached_group_policies:
+            policies.append(f"GroupPolicy: {gp['PolicyName']}")
+
+    details['Permissions'] = "\n".join([f"{i+1}. {p}" for i, p in enumerate(policies)]) if policies else "None"
+
+    # Last login / key use
     login_date = user.get('PasswordLastUsed')
     key_used_dates = []
     for k in keys:
@@ -71,68 +77,51 @@ def get_user_details(user):
 
     all_dates = [d for d in [login_date, *key_used_dates] if d]
     if all_dates:
-        most_recent = max(all_dates)
-        details['LastLoginDays'] = days_since(most_recent)
+        details['LastLoginDays'] = days_since(max(all_dates))
 
-    # ---- Eligibility for removal ----
-    if (
-        (not login_date or days_since(login_date) >= 90)
-        and (not key_used_dates or all(days_since(d) >= 90 for d in key_used_dates))
-    ):
+    # Removal eligibility
+    if ((not login_date or days_since(login_date) >= 90)
+        and (not key_used_dates or all(days_since(d) >= 90 for d in key_used_dates))):
         details['EligibleToRemove'] = 'Yes'
 
     return details
 
-
 def format_excel(file_path):
-    """Apply basic formatting to Excel (bold headers, auto column width)."""
     wb = load_workbook(file_path)
     ws = wb.active
 
-    # Bold header row
     for cell in ws[1]:
         cell.font = Font(bold=True)
+        cell.alignment = Alignment(horizontal="center")
 
-    # Auto-adjust column width
     for col in ws.columns:
-        max_length = 0
-        col_letter = get_column_letter(col[0].column)
-        for cell in col:
-            try:
-                if cell.value:
-                    max_length = max(max_length, len(str(cell.value)))
-            except:
-                pass
-        adjusted_width = (max_length + 3)
-        ws.column_dimensions[col_letter].width = adjusted_width
+        max_len = max((len(str(c.value)) for c in col if c.value), default=0)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 5, 60)
+
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     wb.save(file_path)
 
-
 def main():
-    paginator = iam.get_paginator('list_users')
-    all_users = []
-
     print("Fetching IAM users... Please wait.\n")
+    paginator = iam.get_paginator('list_users')
+    all_users = [get_user_details(u) for p in paginator.paginate() for u in p['Users']]
 
-    for page in paginator.paginate():
-        for user in page['Users']:
-            all_users.append(get_user_details(user))
+    for u in all_users:
+        u['LastLoginDays'] = format_days(u['LastLoginDays'])
 
-    # ---- Print formatted table ----
     headers = ["User", "UserType", "TypeOfAccess", "Permissions", "LastLoginDays", "EligibleToRemove"]
     rows = [[u[h] for h in headers] for u in all_users]
     print(tabulate(rows, headers=headers, tablefmt="grid"))
     print(f"\nTotal users: {len(all_users)}")
 
-    # ---- Generate Excel file ----
-    df = pd.DataFrame(all_users)
-    output_path = "/home/cloudshell-user/iam_users_report.xlsx"
-    df.to_excel(output_path, index=False)
+    output_path = os.path.expanduser("~/iam_users_report.xlsx")
+    pd.DataFrame(all_users).to_excel(output_path, index=False)
     format_excel(output_path)
 
     print(f"\n✅ Excel report saved at: {output_path}")
-
 
 if __name__ == "__main__":
     main()
