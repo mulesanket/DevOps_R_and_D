@@ -127,7 +127,7 @@ def main():
 
     # ---- Generate Excel file ----
     df = pd.DataFrame(all_users)
-    output_path = "/home/ubuntu/DevOps_R_and_D/scripts/python_scripts/iam_users_report.xlsx"
+    output_path = "/home/cloudshell-user/iam_users_report.xlsx"
     df.to_excel(output_path, index=False)
     format_excel(output_path)
 
