@@ -98,12 +98,13 @@ def get_user_details(user):
     if all_dates:
         details["LastLoginDays"] = days_since(max(all_dates))
 
-    # Eligible for removal
-    if (
-        (not login_date or days_since(login_date) >= 90)
-        and (not key_used_dates or all(days_since(d) >= 90 for d in key_used_dates))
-    ):
-        details["EligibleToRemove"] = "Yes"
+    # Eligible for removal -> Only for Local users
+    if details["UserType"] == "Local":
+        if (
+            (not login_date or days_since(login_date) >= 90)
+            and (not key_used_dates or all(days_since(d) >= 90 for d in key_used_dates))
+        ):
+            details["EligibleToRemove"] = "Yes"
 
     return details
 
@@ -121,13 +122,13 @@ def format_excel(file_path):
         max_len = max((len(str(c.value)) for c in col if c.value), default=0)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 5, 70)
 
-    # Wrap text and make permission types bold
+    # Wrap text and format permissions
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-            if cell.column == 4 and cell.value:  # Permissions column
+            if cell.column == 4 and cell.value:
                 text = str(cell.value)
-                # Apply font formatting to "AWS Managed", "Customer Managed", etc.
+                # Highlight permission types (we could make them bold if needed)
                 for keyword in [
                     "AWS Managed:",
                     "Customer Managed:",
@@ -135,20 +136,8 @@ def format_excel(file_path):
                     "Group:",
                 ]:
                     if keyword in text:
-                        parts = re.split(f"({keyword})", text)
-                        cell.value = ""  # clear text, rebuild it
-                        run_text = ""
-                        for part in parts:
-                            if part in [
-                                "AWS Managed:",
-                                "Customer Managed:",
-                                "Customer Inline:",
-                                "Group:",
-                            ]:
-                                run_text += part  # keep the keyword
-                            else:
-                                run_text += part
-                        cell.value = run_text  # full cell text back (font styling applies to cell level)
+                        text = text.replace(keyword, f"{keyword}")
+                cell.value = text
 
     wb.save(file_path)
 
