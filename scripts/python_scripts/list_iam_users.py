@@ -6,6 +6,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 from openpyxl import load_workbook
 import os
+import re
 
 iam = boto3.client("iam")
 
@@ -48,45 +49,43 @@ def get_user_details(user):
             "Both" if details["TypeOfAccess"] == "Console" else "CLI"
         )
 
-    # ---- Permissions Breakdown ----
+    # Permissions
     policies = []
 
-    # 1️⃣ Direct managed policies (AWS- or Customer-managed)
+    # Direct managed policies
     for p in iam.list_attached_user_policies(UserName=username)["AttachedPolicies"]:
         arn = p["PolicyArn"]
         name = p["PolicyName"]
         if arn.startswith("arn:aws:iam::aws:policy/"):
-            policies.append(f"**AWS Managed:** {name}")
+            policies.append(f"AWS Managed: {name}")
         else:
-            policies.append(f"**Customer Managed:** {name}")
+            policies.append(f"Customer Managed: {name}")
 
-    # 2️⃣ Inline user policies
+    # Inline user policies
     for p in iam.list_user_policies(UserName=username)["PolicyNames"]:
-        policies.append(f"**Customer Inline:** {p}")
+        policies.append(f"Customer Inline: {p}")
 
-    # 3️⃣ Group memberships + their policies
-    groups = iam.list_groups_for_user(UserName=username)["Groups"]
-    for g in groups:
+    # Group-based policies
+    for g in iam.list_groups_for_user(UserName=username)["Groups"]:
         gname = g["GroupName"]
-        policies.append(f"**Group:** {gname}")
+        policies.append(f"Group: {gname}")
         attached_group_policies = iam.list_attached_group_policies(GroupName=gname)[
             "AttachedPolicies"
         ]
         for gp in attached_group_policies:
             arn = gp["PolicyArn"]
             if arn.startswith("arn:aws:iam::aws:policy/"):
-                policies.append(f"**AWS Managed:** {gp['PolicyName']}")
+                policies.append(f"AWS Managed: {gp['PolicyName']}")
             else:
-                policies.append(f"**Customer Managed:** {gp['PolicyName']}")
+                policies.append(f"Customer Managed: {gp['PolicyName']}")
 
-    # Numbering
     details["Permissions"] = (
         "\n".join([f"{i+1}. {p}" for i, p in enumerate(policies)])
         if policies
         else "None"
     )
 
-    # ---- Last login ----
+    # Last login
     login_date = user.get("PasswordLastUsed")
     key_used_dates = []
     for k in keys:
@@ -99,7 +98,7 @@ def get_user_details(user):
     if all_dates:
         details["LastLoginDays"] = days_since(max(all_dates))
 
-    # ---- Removal eligibility ----
+    # Eligible for removal
     if (
         (not login_date or days_since(login_date) >= 90)
         and (not key_used_dates or all(days_since(d) >= 90 for d in key_used_dates))
@@ -112,17 +111,44 @@ def format_excel(file_path):
     wb = load_workbook(file_path)
     ws = wb.active
 
+    # Bold headers
     for cell in ws[1]:
         cell.font = Font(bold=True)
         cell.alignment = Alignment(horizontal="center")
 
+    # Adjust columns
     for col in ws.columns:
         max_len = max((len(str(c.value)) for c in col if c.value), default=0)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max_len + 5, 70)
 
+    # Wrap text and make permission types bold
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if cell.column == 4 and cell.value:  # Permissions column
+                text = str(cell.value)
+                # Apply font formatting to "AWS Managed", "Customer Managed", etc.
+                for keyword in [
+                    "AWS Managed:",
+                    "Customer Managed:",
+                    "Customer Inline:",
+                    "Group:",
+                ]:
+                    if keyword in text:
+                        parts = re.split(f"({keyword})", text)
+                        cell.value = ""  # clear text, rebuild it
+                        run_text = ""
+                        for part in parts:
+                            if part in [
+                                "AWS Managed:",
+                                "Customer Managed:",
+                                "Customer Inline:",
+                                "Group:",
+                            ]:
+                                run_text += part  # keep the keyword
+                            else:
+                                run_text += part
+                        cell.value = run_text  # full cell text back (font styling applies to cell level)
 
     wb.save(file_path)
 
