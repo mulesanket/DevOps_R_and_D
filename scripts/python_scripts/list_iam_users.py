@@ -1,6 +1,10 @@
 import boto3
+import pandas as pd
 from datetime import datetime, timezone
-from tabulate import tabulate   # <-- for neat table output
+from tabulate import tabulate
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font
+from openpyxl import load_workbook
 
 # Create IAM client
 iam = boto3.client('iam')
@@ -69,8 +73,6 @@ def get_user_details(user):
     if all_dates:
         most_recent = max(all_dates)
         details['LastLoginDays'] = days_since(most_recent)
-    else:
-        details['LastLoginDays'] = None
 
     # ---- Eligibility for removal ----
     if (
@@ -82,31 +84,54 @@ def get_user_details(user):
     return details
 
 
+def format_excel(file_path):
+    """Apply basic formatting to Excel (bold headers, auto column width)."""
+    wb = load_workbook(file_path)
+    ws = wb.active
+
+    # Bold header row
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+
+    # Auto-adjust column width
+    for col in ws.columns:
+        max_length = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            try:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            except:
+                pass
+        adjusted_width = (max_length + 3)
+        ws.column_dimensions[col_letter].width = adjusted_width
+
+    wb.save(file_path)
+
+
 def main():
     paginator = iam.get_paginator('list_users')
     all_users = []
+
+    print("Fetching IAM users... Please wait.\n")
 
     for page in paginator.paginate():
         for user in page['Users']:
             all_users.append(get_user_details(user))
 
-    # ---- Prepare table data ----
+    # ---- Print formatted table ----
     headers = ["User", "UserType", "TypeOfAccess", "Permissions", "LastLoginDays", "EligibleToRemove"]
-    rows = [
-        [
-            u['User'],
-            u['UserType'],
-            u['TypeOfAccess'],
-            u['Permissions'],
-            u['LastLoginDays'],
-            u['EligibleToRemove'],
-        ]
-        for u in all_users
-    ]
-
-    # ---- Print pretty table ----
+    rows = [[u[h] for h in headers] for u in all_users]
     print(tabulate(rows, headers=headers, tablefmt="grid"))
     print(f"\nTotal users: {len(all_users)}")
+
+    # ---- Generate Excel file ----
+    df = pd.DataFrame(all_users)
+    output_path = "/home/ubuntu/DevOps_R_and_D/scripts/python_scripts/iam_users_report.xlsx"
+    df.to_excel(output_path, index=False)
+    format_excel(output_path)
+
+    print(f"\n✅ Excel report saved at: {output_path}")
 
 
 if __name__ == "__main__":
